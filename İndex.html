@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kişisel Finans ve Varlık Takibi</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f9fafb;
+        }
+        .custom-scroll::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background-color: #0d9488;
+            border-radius: 4px;
+        }
+        .custom-scroll::-webkit-scrollbar-track {
+            background-color: #f1f5f9;
+        }
+    </style>
+    <!-- Firebase SDK Modules -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        setLogLevel('debug');
+
+        // Yapılandırmalar ve Sabitler
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        const MASTER_PIN = '1234'; 
+        
+        let app, db, auth, userId = null;
+
+        // Uygulama Durumu (State)
+        window.appState = {
+            isAuthReady: false,
+            isAuthenticated: false,
+            loginError: false,
+            transactions: [],
+            safeItems: [],
+            activeTab: 'transactions',
+            showModal: false,
+            formType: 'transaction', 
+            nickname: localStorage.getItem('finance_app_nickname') || 'Kullanıcı',
+            isEditingNickname: false,
+            showUserId: false,
+        };
+
+        // SVG İkonlar
+        const Icons = {
+            Banknote: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg>`,
+            Safe: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1" fill="currentColor"/></svg>`,
+            PlusCircle: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+            X: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`,
+            Eye: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>`,
+            EyeOff: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858-5.908a10.025 10.025 0 013.122-.813c4.478 0 8.268 2.943 9.542 7a9.97 9.97 0 01-2.163 3.592M15 12a3 3 0 11-6 0 3 3 0 016 0zM3 3l18 18"/></svg>`,
+            Pencil: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>`,
+            LogOut: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>`,
+            Trash: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>`,
+            Wallet: (cls = "w-6 h-6") => `<svg class="${cls}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>`
+        };
+
+        // Yardımcı Fonksiyonlar
+        function formatCurrency(value) {
+            return new Intl.NumberFormat('tr-TR', {
+                style: 'currency',
+                currency: 'TRY',
+                minimumFractionDigits: 2
+            }).format(value || 0);
+        }
+
+        // Global Etkileşim Fonksiyonları
+        window.handleLogin = (e) => {
+            e.preventDefault();
+            const inputPin = document.getElementById('pinInput')?.value;
+            if (inputPin === MASTER_PIN) {
+                window.appState.isAuthenticated = true;
+                window.appState.loginError = false;
+            } else {
+                window.appState.loginError = true;
+            }
+            renderApp();
+            return false;
+        };
+
+        window.handleLogout = () => {
+            window.appState.isAuthenticated = false;
+            renderApp();
+        };
+
+        window.toggleUserId = () => {
+            window.appState.showUserId = !window.appState.showUserId;
+            renderApp();
+        };
+
+        window.setActiveTab = (tab) => {
+            window.appState.activeTab = tab;
+            renderApp();
+        };
+
+        window.openModal = (type) => {
+            window.appState.formType = type;
+            window.appState.showModal = true;
+            renderApp();
+        };
+
+        window.closeModal = (e) => {
+            if (e) e.preventDefault();
+            window.appState.showModal = false;
+            renderApp();
+        };
+
+        window.handleSaveNickname = (e) => {
+            e.preventDefault();
+            const val = document.getElementById('nicknameInput')?.value.trim();
+            if (val) {
+                window.appState.nickname = val;
+                localStorage.setItem('finance_app_nickname', val);
+            }
+            window.appState.isEditingNickname = false;
+            renderApp();
+            return false;
+        };
+
+        window.handleFormSubmit = async (e) => {
+            e.preventDefault();
+            const amountOrValue = parseFloat(document.getElementById('amountOrValue')?.value);
+            const descriptionOrName = document.getElementById('descriptionOrName')?.value.trim();
+            const additionalData = document.getElementById('additionalData')?.value;
+
+            if (isNaN(amountOrValue) || !descriptionOrName) return;
+
+            if (window.appState.formType === 'transaction') {
+                const newTx = {
+                    amount: amountOrValue,
+                    description: descriptionOrName,
+                    type: additionalData,
+                    timestamp: new Date().toISOString(),
+                    date: new Date().toLocaleDateString('tr-TR')
+                };
+
+                if (db && userId) {
+                    try {
+                        const path = `/artifacts/${appId}/users/${userId}/bank_transactions`;
+                        await addDoc(collection(db, path), {
+                            ...newTx,
+                            timestamp: serverTimestamp()
+                        });
+                    } catch (err) {
+                        console.error("Firebase ekleme hatası:", err);
+                        window.appState.transactions.unshift({ id: 'loc-' + Date.now(), ...newTx });
+                    }
+                } else {
+                    window.appState.transactions.unshift({ id: 'loc-' + Date.now(), ...newTx });
+                }
+            } else {
+                const newItem = {
+                    name: descriptionOrName,
+                    value: amountOrValue,
+                    location: additionalData,
+                    timestamp: new Date().toISOString()
+                };
+
+                if (db && userId) {
+                    try {
+                        const path = `/artifacts/${appId}/users/${userId}/safe_items`;
+                        await addDoc(collection(db, path), {
+                            ...newItem,
+                            timestamp: serverTimestamp()
+                        });
+                    } catch (err) {
+                        console.error("Firebase kasa ekleme hatası:", err);
+                        window.appState.safeItems.unshift({ id: 'loc-' + Date.now(), ...newItem });
+                    }
+                } else {
+                    window.appState.safeItems.unshift({ id: 'loc-' + Date.now(), ...newItem });
+                }
+            }
+
+            window.appState.showModal = false;
+            renderApp();
+        };
+
+        window.deleteTransaction = async (id) => {
+            if (db && userId && !id.startsWith('loc-')) {
+                try {
+                    const path = `/artifacts/${appId}/users/${userId}/bank_transactions`;
+                    await deleteDoc(doc(db, path, id));
+                } catch (e) {
+                    console.error("Silme hatası:", e);
+                }
+            } else {
+                window.appState.transactions = window.appState.transactions.filter(t => t.id !== id);
+                renderApp();
+            }
+        };
+
+        window.deleteSafeItem = async (id) => {
+            if (db && userId && !id.startsWith('loc-')) {
+                try {
+                    const path = `/artifacts/${appId}/users/${userId}/safe_items`;
+                    await deleteDoc(doc(db, path, id));
+                } catch (e) {
+                    console.error("Silme hatası:", e);
+                }
+            } else {
+                window.appState.safeItems = window.appState.safeItems.filter(i => i.id !== id);
+                renderApp();
+            }
+        };
+
+        // Arayüz Çizimi (Render)
+        function renderLoginScreen() {
+            return `
+                <div class="flex items-center justify-center min-h-screen bg-teal-800 p-4 font-sans">
+                    <div class="w-full max-w-sm bg-white p-8 rounded-2xl shadow-2xl">
+                        <div class="flex justify-center mb-4 text-teal-700">
+                            ${Icons.Safe('w-12 h-12')}
+                        </div>
+                        <h2 class="text-2xl font-bold text-center text-teal-900 mb-1">Varlık Takip Sistemi</h2>
+                        <p class="text-xs text-center text-gray-500 mb-6">
+                            Lütfen güvenli erişim için PIN kodunuzu girin.
+                        </p>
+                        <form onsubmit="return handleLogin(event)">
+                            <input
+                                id="pinInput"
+                                type="password"
+                                inputmode="numeric"
+                                pattern="[0-9]*"
+                                placeholder="****"
+                                class="w-full p-3.5 mb-4 text-center text-2xl tracking-widest border-2 rounded-xl focus:outline-none placeholder-gray-300 border-gray-300 focus:border-teal-600 transition"
+                                required
+                                autofocus
+                            />
+                            ${window.appState.loginError ? `<p class="text-red-500 text-xs text-center mb-4 font-semibold">Hatalı PIN! Lütfen tekrar deneyin.</p>` : ''}
+                            <button
+                                type="submit"
+                                class="w-full py-3.5 rounded-xl text-white font-semibold bg-teal-600 hover:bg-teal-700 active:bg-teal-800 transition duration-200 shadow-lg min-h-[48px]"
+                            >
+                                Giriş Yap
+                            </button>
+                        </form>
+                        <p class="text-[11px] text-gray-400 text-center mt-6">
+                            Varsayılan PIN: <span class="font-mono font-bold text-gray-600">1234</span>
+                        </p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderModal() {
+            if (!window.appState.showModal) return '';
+
+            const isTx = window.appState.formType === 'transaction';
+            const title = isTx ? 'Yeni Banka İşlemi' : 'Yeni Kasa Varlığı';
+
+            return `
+                <div class="fixed inset-0 bg-gray-900 bg-opacity-60 backdrop-blur-sm flex items-center justify-center p-4 z-50 transition-opacity" onclick="closeModal(event)">
+                    <div class="bg-white w-full max-w-md p-6 rounded-2xl shadow-2xl transform transition-all" onclick="event.stopPropagation()">
+                        <div class="flex justify-between items-center mb-5 border-b pb-3">
+                            <h3 class="text-lg font-bold text-teal-800">${title}</h3>
+                            <button onclick="closeModal(event)" class="text-gray-400 hover:text-gray-600 p-1">
+                                ${Icons.X('w-6 h-6')}
+                            </button>
+                        </div>
+
+                        <form id="entryForm" onsubmit="return handleFormSubmit(event)">
+                            <div class="mb-4">
+                                <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">${isTx ? "Miktar (TL)" : "Tahmini Değer (TL)"}</label>
+                                <input id="amountOrValue" type="number" step="0.01" inputmode="decimal" class="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition text-base" placeholder="${isTx ? "150.00" : "25000.00"}" required>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">${isTx ? "İşlem Açıklaması" : "Öğe Adı"}</label>
+                                <input id="descriptionOrName" type="text" class="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition text-base" placeholder="${isTx ? "Maaş Ödemesi / Market" : "Pırlanta Yüzük / Altın"}" required>
+                            </div>
+
+                            <div class="mb-4">
+                                <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">${isTx ? "İşlem Türü" : "Konum / Durum"}</label>
+                                <select id="additionalData" class="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition text-base" required>
+                                    ${isTx ? `
+                                        <option value="Gelir">Gelir (Hesaba Giren) ⬆️</option>
+                                        <option value="Gider">Gider (Hesaptan Çıkan) ⬇️</option>
+                                    ` : `
+                                        <option value="Banka Kasası">Banka Kasası</option>
+                                        <option value="Ev Kasası">Ev Kasası</option>
+                                        <option value="Dijital Varlık (Kripto/Hisse)">Dijital Varlık (Kripto/Hisse)</option>
+                                    `}
+                                </select>
+                            </div>
+                            
+                            <div class="flex justify-end space-x-3 mt-6">
+                                <button onclick="closeModal(event)" class="py-2.5 px-4 rounded-xl text-gray-700 bg-gray-100 hover:bg-gray-200 transition font-medium min-h-[44px]" type="button">
+                                    Vazgeç
+                                </button>
+                                <button class="py-2.5 px-5 rounded-xl text-white bg-teal-600 hover:bg-teal-700 transition font-semibold shadow-md min-h-[44px]" type="submit">
+                                    Kaydet
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderMainApp() {
+            const bankBalance = window.appState.transactions.reduce((total, tx) => {
+                const amount = parseFloat(tx.amount || 0);
+                return tx.type === 'Gelir' ? total + amount : total - amount;
+            }, 0);
+
+            const safeTotalValue = window.appState.safeItems.reduce((total, item) => total + (parseFloat(item.value) || 0), 0);
+            const totalNetWorth = bankBalance + safeTotalValue;
+
+            const nicknameDisplay = window.appState.isEditingNickname ? `
+                <form onsubmit="return handleSaveNickname(event)" class="inline-flex items-center space-x-2">
+                    <span>Hoş geldiniz,</span>
+                    <input id="nicknameInput" type="text" value="${window.appState.nickname}" maxLength="20" class="p-1 px-2 text-sm text-gray-800 rounded-md w-28 focus:outline-none" autofocus />
+                    <button type="submit" class="text-teal-200 hover:text-white font-semibold text-xs bg-teal-800 px-2 py-1 rounded">Kaydet</button>
+                </form>
+            ` : `
+                <div class="inline-flex items-center space-x-2">
+                    <span class="text-base font-semibold text-white">
+                        Hoş geldiniz, ${window.appState.nickname}!
+                    </span>
+                    <button onclick="window.appState.isEditingNickname = true; renderApp();" class="text-teal-200 hover:text-white transition p-1" title="Adı düzenle">
+                        ${Icons.Pencil('w-4 h-4')}
+                    </button>
+                </div>
+            `;
+
+            const transactionsHtml = `
+                <div class="bg-white p-4 sm:p-6 rounded-2xl shadow-md border border-gray-100">
+                    <h2 class="text-lg font-bold mb-4 text-gray-800 flex items-center">
+                        <span class="mr-2">🏦</span> Banka Hesap İşlemleri
+                    </h2>
+                    
+                    <!-- Mobil Görünüm -->
+                    <div class="block sm:hidden space-y-3">
+                        ${window.appState.transactions.length === 0 ? `
+                            <p class="text-sm text-gray-400 text-center py-6">Henüz bir banka işlemi kaydı bulunmuyor.</p>
+                        ` : window.appState.transactions.map(tx => `
+                            <div class="p-4 rounded-xl bg-gray-50 border border-gray-200 flex justify-between items-center">
+                                <div class="space-y-1"
